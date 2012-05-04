@@ -12,7 +12,7 @@ demo: demo.c
 	$(IOS_CC) -arch armv7 -isysroot /Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS5.0.sdk -framework CoreFoundation -o demo demo.c
 
 fruitstrap: fruitstrap.c
-	gcc -o fruitstrap -framework CoreFoundation -framework MobileDevice -F/System/Library/PrivateFrameworks fruitstrap.c
+	gcc -g -o fruitstrap -framework CoreFoundation -framework MobileDevice -F/System/Library/PrivateFrameworks fruitstrap.c
 
 install: all
 	./fruitstrap demo.app
