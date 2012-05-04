@@ -744,7 +744,7 @@ void usage(const char* app) {
     printf ("    * Uploads a file to the documents directory of the app specified with the bundle \n");
     printf ("      identifier (eg com.foo.MyApp) to the specified device, or all attached devices if\n");
     printf ("      none are specified. \n\n");
-    printf ("   list-files [-i/--id=device_id] --bundle-id=<bundle id> \n");
+    printf ("   list-files [--id=device_id] --bundle-id=<bundle id> \n");
     printf ("    * Lists the the files in the app-specific sandbox  specified with the bundle \n");
     printf ("      identifier (eg com.foo.MyApp) on the specified device, or all attached devices if\n");
     printf ("      none are specified. \n\n");
