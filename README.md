@@ -1,3 +1,5 @@
+---
+
 fruitstrap
 ==========
 Install and debug iPhone apps without using Xcode. Designed to work on unjailbroken devices.
@@ -34,7 +36,6 @@ Commands available:
 
 * `list-devices`:
    List all attached devices.
-
 
 ## Demo
 
