@@ -507,11 +507,12 @@ void handle_device(AMDeviceRef device) {
     int installFd;
     assert(AMDeviceStartService(device, CFSTR("com.apple.mobile.installation_proxy"), (service_conn_t *) &installFd, NULL) == 0);
 
-    assert(AMDeviceStopSession(device) == 0);
-    assert(AMDeviceDisconnect(device) == 0);
+    //assert(AMDeviceStopSession(device) == 0);
+    //assert(AMDeviceDisconnect(device) == 0);
 
     if (operation == OP_INSTALL) {
-        mach_error_t result = AMDeviceInstallApplication(installFd, path, options, operation_callback, NULL);
+        mach_error_t result = AMDeviceSecureInstallApplication(0, device, url, options, &operation_callback, 0);
+        //mach_error_t result = AMDeviceInstallApplication(installFd, path, options, operation_callback, NULL);
         if (result != 0)
         {
 			PRINT("AMDeviceInstallApplication failed: %d\n", result);
@@ -526,6 +527,9 @@ void handle_device(AMDeviceRef device) {
 			exit(EXIT_FAILURE);
         }
     }
+    
+    assert(AMDeviceStopSession(device) == 0);
+    assert(AMDeviceDisconnect(device) == 0);
 
 
     close(installFd);
@@ -536,7 +540,7 @@ void handle_device(AMDeviceRef device) {
     if (operation == OP_INSTALL)
         PRINT("[100%%] Installed package %s\n", app_path);
     else if (operation == OP_UNINSTALL)
-        PRINT("[100%%] uninstalled package %s\n", app_path);
+        PRINT("[100%%] Uninstalled package %s\n", app_path);
 
 
     if (!debug) exit(EXIT_SUCCESS); // no debug phase
