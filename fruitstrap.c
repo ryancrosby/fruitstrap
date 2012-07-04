@@ -48,15 +48,6 @@ typedef enum {
 
     OP_INSTALL,
     OP_UNINSTALL,
-    OP_LIST_DEVICES
-
-} operation_t;
-
-typedef enum {
-    OP_NONE,
-
-    OP_INSTALL,
-    OP_UNINSTALL,
     OP_LIST_DEVICES,
     OP_UPLOAD_FILE,
     OP_LIST_FILES
