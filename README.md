@@ -1,4 +1,4 @@
-
+Merged improvements from newer forks of fruitstrap
 fruitstrap
 ==========
 Install and debug iPhone apps without using Xcode. Designed to work on unjailbroken devices.
