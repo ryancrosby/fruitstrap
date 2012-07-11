@@ -478,7 +478,7 @@ void handle_device(AMDeviceRef device) {
     int afcFd;
 	int startServiceAFCRetval = AMDeviceStartService(device, CFSTR("com.apple.afc"), (service_conn_t *) &afcFd, NULL);
 	printf("trying to start com.apple.afc : %d\n", startServiceAFCRetval);
-	
+
 	if( startServiceAFCRetval )
 	{
 		sleep(1);
@@ -527,7 +527,7 @@ void handle_device(AMDeviceRef device) {
 			exit(EXIT_FAILURE);
         }
     }
-    
+
     assert(AMDeviceStopSession(device) == 0);
     assert(AMDeviceDisconnect(device) == 0);
 
@@ -606,10 +606,10 @@ int main(int argc, char *argv[]) {
         { "quiet", no_argument, NULL, 'q' },
         { "verbose", no_argument, NULL, 'v' },
         { "timeout", required_argument, NULL, 't' },
-        
+
         { "id", required_argument, NULL, 'i' },
         { "bundle", required_argument, NULL, 'b' },
-   
+
         { "debug", no_argument, NULL, 'd' },
         { "args", required_argument, NULL, 'a' },
 
@@ -617,7 +617,7 @@ int main(int argc, char *argv[]) {
     };
 
     char ch;
-    while ((ch = getopt_long(argc, argv, "qvtibda:", global_longopts, NULL)) != -1)
+    while ((ch = getopt_long(argc, argv, "qvt:i:b:da:", global_longopts, NULL)) != -1)
     {
         switch (ch) {
         case 'q':
@@ -646,7 +646,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
-    
+
     if (optind >= argc) {
         usage(argv [0]);
         exit(EXIT_SUCCESS);
@@ -686,6 +686,6 @@ int main(int argc, char *argv[]) {
 
     struct am_device_notification *notify;
     AMDeviceNotificationSubscribe(&device_callback, 0, 0, NULL, &notify);
-	
+
     CFRunLoopRun();
 }
