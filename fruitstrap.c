@@ -461,8 +461,6 @@ void read_dir(service_conn_t afcFd, afc_connection* afc_conn_p, const char* dir)
     afc_dictionary* afc_dict_p = &afc_dict;
     AFCFileInfoOpen(afc_conn_p, dir, &afc_dict_p);
 
-    PRINT("[  0%%] Found device (%s), beginning install\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
-
     afc_directory afc_dir;
     afc_directory* afc_dir_p = &afc_dir;
     afc_error_t err = AFCDirectoryOpen(afc_conn_p, dir, &afc_dir_p);

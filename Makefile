@@ -3,9 +3,6 @@ IOS_CC = $(SDK_PATH)/Platforms/iPhoneOS.platform/Developer/usr/bin/gcc
 
 all: fruitstrap
 
-fruitstrap: fruitstrap.c
-	gcc -o fruitstrap -framework CoreFoundation -framework MobileDevice -F/System/Library/PrivateFrameworks fruitstrap.c
-
 demo.app: demo Info.plist
 	mkdir -p demo.app
 	cp demo demo.app/
