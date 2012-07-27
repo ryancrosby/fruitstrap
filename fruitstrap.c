@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <signal.h>
 #include <getopt.h>
@@ -47,7 +48,9 @@ typedef enum {
 
     OP_INSTALL,
     OP_UNINSTALL,
-    OP_LIST_DEVICES
+    OP_LIST_DEVICES,
+    OP_UPLOAD_FILE,
+    OP_LIST_FILES
 
 } operation_t;
 
@@ -60,6 +63,9 @@ int AMDeviceLookupApplications(AMDeviceRef device, int zero, CFDictionaryRef* re
 bool found_device = false, debug = false, verbose = false, quiet = false;
 char *app_path = NULL;
 char *device_id = NULL;
+char *doc_file_path = NULL;
+char *target_filename = NULL;
+char *bundle_id = NULL;
 char *args = NULL;
 int timeout = 0;
 operation_t operation = OP_INSTALL;
@@ -284,7 +290,6 @@ void operation_callback(CFDictionaryRef dict, int arg) {
     int percent;
     CFStringRef status = CFDictionaryGetValue(dict, CFSTR("Status"));
     CFNumberGetValue(CFDictionaryGetValue(dict, CFSTR("PercentComplete")), kCFNumberSInt32Type, &percent);
-
     PRINT("[%3d%%] %s\n", (percent / 2) + 50, CFStringGetCStringPtr(status, kCFStringEncodingMacRoman));
 }
 
@@ -439,6 +444,269 @@ void gdb_ready_handler(int signum)
 	_exit(EXIT_SUCCESS);
 }
 
+void read_dir(service_conn_t afcFd, afc_connection* afc_conn_p, const char* dir)
+{
+    char *dir_ent;
+
+    afc_connection afc_conn;
+    if (!afc_conn_p) {
+        afc_conn_p = &afc_conn;
+        AFCConnectionOpen(afcFd, 0, &afc_conn_p);
+
+    }
+
+    printf("%s\n", dir);
+
+    afc_dictionary afc_dict;
+    afc_dictionary* afc_dict_p = &afc_dict;
+    AFCFileInfoOpen(afc_conn_p, dir, &afc_dict_p);
+
+    PRINT("[  0%%] Found device (%s), beginning install\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
+
+    afc_directory afc_dir;
+    afc_directory* afc_dir_p = &afc_dir;
+    afc_error_t err = AFCDirectoryOpen(afc_conn_p, dir, &afc_dir_p);
+
+    if (err != 0)
+    {
+        // Couldn't open dir - was probably a file
+        return;
+    }
+
+    while(true) {
+        err = AFCDirectoryRead(afc_conn_p, afc_dir_p, &dir_ent);
+
+        if (!dir_ent)
+            break;
+
+        if (strcmp(dir_ent, ".") == 0 || strcmp(dir_ent, "..") == 0)
+            continue;
+
+        char* dir_joined = malloc(strlen(dir) + strlen(dir_ent) + 2);
+        strcpy(dir_joined, dir);
+        if (dir_joined[strlen(dir)-1] != '/')
+            strcat(dir_joined, "/");
+        strcat(dir_joined, dir_ent);
+        read_dir(afcFd, afc_conn_p, dir_joined);
+        free(dir_joined);
+    }
+
+    AFCDirectoryClose(afc_conn_p, afc_dir_p);
+}
+
+service_conn_t start_afc_service(AMDeviceRef device) {
+    AMDeviceConnect(device);
+    assert(AMDeviceIsPaired(device));
+    assert(AMDeviceValidatePairing(device) == 0);
+    assert(AMDeviceStartSession(device) == 0);
+
+    service_conn_t afcFd;
+    assert(AMDeviceStartService(device, AMSVC_AFC, &afcFd, NULL) == 0);
+
+    assert(AMDeviceStopSession(device) == 0);
+    assert(AMDeviceDisconnect(device) == 0);
+    return afcFd;
+}
+
+service_conn_t start_install_proxy_service(AMDeviceRef device) {
+    AMDeviceConnect(device);
+    assert(AMDeviceIsPaired(device));
+    assert(AMDeviceValidatePairing(device) == 0);
+    assert(AMDeviceStartSession(device) == 0);
+
+    service_conn_t installFd;
+    assert(AMDeviceStartService(device, CFSTR("com.apple.mobile.installation_proxy"), &installFd, NULL) == 0);
+
+    assert(AMDeviceStopSession(device) == 0);
+    assert(AMDeviceDisconnect(device) == 0);
+
+    return installFd;
+}
+
+// Used to send files to app-specific sandbox (Documents dir)
+service_conn_t start_house_arrest_service(AMDeviceRef device) {
+    AMDeviceConnect(device);
+    assert(AMDeviceIsPaired(device));
+    assert(AMDeviceValidatePairing(device) == 0);
+    assert(AMDeviceStartSession(device) == 0);
+
+    service_conn_t houseFd;
+
+    CFStringRef cf_bundle_id = CFStringCreateWithCString(NULL, bundle_id, kCFStringEncodingASCII);
+    if (AMDeviceStartHouseArrestService(device, cf_bundle_id, 0, &houseFd, 0) != 0)
+    {
+        PRINT("Unable to find bundle with id: %s\n", bundle_id);
+        exit(1);
+    }
+
+    assert(AMDeviceStopSession(device) == 0);
+    assert(AMDeviceDisconnect(device) == 0);
+    CFRelease(cf_bundle_id);
+
+    return houseFd;
+}
+
+void install_app(AMDeviceRef device) {
+    service_conn_t afcFd = start_afc_service(device);
+
+    CFStringRef path = CFStringCreateWithCString(NULL, app_path, kCFStringEncodingASCII);
+
+    assert(AMDeviceTransferApplication(afcFd, path, NULL, transfer_callback, NULL) == 0);
+    close(afcFd);
+
+    service_conn_t installFd = start_install_proxy_service(device);
+
+    CFStringRef keys[] = { CFSTR("PackageType") };
+    CFStringRef values[] = { CFSTR("Developer") };
+    CFDictionaryRef options = CFDictionaryCreate(NULL, (const void **)&keys, (const void **)&values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    mach_error_t result = AMDeviceInstallApplication (installFd, path, options, operation_callback, NULL);
+    if (result != 0)
+    {
+        PRINT("AMDeviceInstallApplication failed: %d\n", result);
+        exit(1);
+    }
+
+    close(installFd);
+    CFRelease(path);
+    CFRelease(options);
+}
+
+void uninstall_app(AMDeviceRef device) {
+    CFStringRef path = CFStringCreateWithCString(NULL, bundle_id, kCFStringEncodingASCII);
+
+    service_conn_t installFd = start_install_proxy_service(device);
+
+    mach_error_t result = AMDeviceUninstallApplication (installFd, path, NULL, operation_callback, NULL);
+    if (result != 0)
+    {
+        PRINT("AMDeviceUninstallApplication failed: %d\n", result);
+        exit(1);
+    }
+
+    close(installFd);
+    CFRelease(path);
+}
+
+char* get_filename_from_path(char* path)
+{
+    char *ptr = path + strlen(path);
+    while (ptr > path)
+    {
+        if (*ptr == '/')
+            break;
+        --ptr;
+    }
+    if (ptr+1 >= path+strlen(path))
+        return NULL;
+    if (ptr == path)
+        return ptr;
+    return ptr+1;
+}
+
+void* read_file_to_memory(char * path, size_t* file_size)
+{
+    struct stat buf;
+    int err = stat(path, &buf);
+    if (err < 0)
+    {
+        return NULL;
+    }
+
+    *file_size = buf.st_size;
+    FILE* fd = fopen(path, "r");
+    char* content = malloc(*file_size);
+    if (fread(content, *file_size, 1, fd) != 1)
+    {
+        fclose(fd);
+        return NULL;
+    }
+    fclose(fd);
+    return content;
+}
+
+void list_files(AMDeviceRef device)
+{
+    service_conn_t houseFd = start_house_arrest_service(device);
+
+    afc_connection afc_conn;
+    afc_connection* afc_conn_p = &afc_conn;
+    AFCConnectionOpen(houseFd, 0, &afc_conn_p);
+
+    read_dir(houseFd, afc_conn_p, "/");
+}
+
+void upload_file(AMDeviceRef device) {
+    service_conn_t houseFd = start_house_arrest_service(device);
+
+    afc_file_ref file_ref;
+
+    afc_connection afc_conn;
+    afc_connection* afc_conn_p = &afc_conn;
+    AFCConnectionOpen(houseFd, 0, &afc_conn_p);
+
+    //        read_dir(houseFd, NULL, "/");
+
+    if (!target_filename)
+    {
+        target_filename = get_filename_from_path(doc_file_path);
+    }
+    char *target_path = malloc(sizeof("/Documents/") + strlen(target_filename) + 1);
+    strcat(target_path, "/Documents/");
+    strcat(target_path, target_filename);
+
+    size_t file_size;
+    void* file_content = read_file_to_memory(doc_file_path, &file_size);
+
+    if (!file_content)
+    {
+        PRINT("Could not open file: %s\n", doc_file_path);
+        exit(-1);
+    }
+
+    assert(AFCFileRefOpen(afc_conn_p, target_path, 3, &file_ref) == 0);
+    assert(AFCFileRefWrite(afc_conn_p, file_ref, file_content, file_size) == 0);
+    assert(AFCFileRefClose(afc_conn_p, file_ref) == 0);
+    assert(AFCConnectionClose(afc_conn_p) == 0);
+
+    free(target_path);
+    free(file_content);
+}
+
+void do_debug(AMDeviceRef device) {
+    CFStringRef path = CFStringCreateWithCString(NULL, app_path, kCFStringEncodingASCII);
+
+    CFURLRef relative_url = CFURLCreateWithFileSystemPath(NULL, path, kCFURLPOSIXPathStyle, false);
+    CFURLRef url = CFURLCopyAbsoluteURL(relative_url);
+
+    AMDeviceConnect(device);
+    assert(AMDeviceIsPaired(device));
+    assert(AMDeviceValidatePairing(device) == 0);
+    assert(AMDeviceStartSession(device) == 0);
+
+    PRINT("------ Debug phase ------\n");
+
+    mount_developer_image(device);      // put debugserver on the device
+    start_remote_debug_server(device);  // start debugserver
+    write_gdb_prep_cmds(device, url);   // dump the necessary gdb commands into a file
+
+    CFRelease(path);
+    CFRelease(relative_url);
+    CFRelease(url);
+
+    PRINT("[100%%] Connecting to remote debug server\n");
+    PRINT("-------------------------\n");
+
+    signal(SIGHUP, gdb_ready_handler);
+
+    pid_t parent = getpid();
+    int pid = fork();
+    if (pid == 0) {
+        system(GDB_SHELL);      // launch gdb
+        kill(parent, SIGHUP);  // "No. I am your father."
+        _exit(EXIT_SUCCESS);
+    }
+}
+
 void handle_device(AMDeviceRef device) {
     if (found_device) return; // handle one device only
 
@@ -454,122 +722,43 @@ void handle_device(AMDeviceRef device) {
     } else {
         if (operation == OP_LIST_DEVICES) {
             printf ("%s\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
-            CFRetain(device); // don't know if this is necessary?
             return;
         }
         found_device = true;
     }
 
-    CFRetain(device); // don't know if this is necessary?
-
-    PRINT("[  0%%] Found device (%s), beginning install\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
-
-    AMDeviceConnect(device);
-    assert(AMDeviceIsPaired(device));
-    assert(AMDeviceValidatePairing(device) == 0);
-    assert(AMDeviceStartSession(device) == 0);
-
-    CFStringRef path = CFStringCreateWithCString(NULL, app_path, kCFStringEncodingASCII);
-    CFURLRef relative_url = CFURLCreateWithFileSystemPath(NULL, path, kCFURLPOSIXPathStyle, false);
-    CFURLRef url = CFURLCopyAbsoluteURL(relative_url);
-
-    CFRelease(relative_url);
-
-    int afcFd;
-	int startServiceAFCRetval = AMDeviceStartService(device, CFSTR("com.apple.afc"), (service_conn_t *) &afcFd, NULL);
-	printf("trying to start com.apple.afc : %d\n", startServiceAFCRetval);
-
-	if( startServiceAFCRetval )
-	{
-		sleep(1);
-		//printf("trying to start com.apple.afc\n");
-		startServiceAFCRetval = AMDeviceStartService(device, CFSTR("com.apple.afc"), (service_conn_t *) &afcFd, NULL);
-	}
-	printf("trying to start com.apple.afc : %d\n", startServiceAFCRetval);
-    assert(startServiceAFCRetval == 0);
-    assert(AMDeviceStopSession(device) == 0);
-    assert(AMDeviceDisconnect(device) == 0);
-
     if (operation == OP_INSTALL) {
-        assert(AMDeviceTransferApplication(afcFd, path, NULL, transfer_callback, NULL) == 0);
-        close(afcFd);
-    }
+        PRINT("[  0%%] Found device (%s), beginning install\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
 
-    CFStringRef keys[] = { CFSTR("PackageType") };
-    CFStringRef values[] = { CFSTR("Developer") };
-    CFDictionaryRef options = CFDictionaryCreate(NULL, (const void **)&keys, (const void **)&values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        install_app(device);
 
-    AMDeviceConnect(device);
-    assert(AMDeviceIsPaired(device));
-    assert(AMDeviceValidatePairing(device) == 0);
-    assert(AMDeviceStartSession(device) == 0);
-
-    int installFd;
-    assert(AMDeviceStartService(device, CFSTR("com.apple.mobile.installation_proxy"), (service_conn_t *) &installFd, NULL) == 0);
-
-    //assert(AMDeviceStopSession(device) == 0);
-    //assert(AMDeviceDisconnect(device) == 0);
-
-    if (operation == OP_INSTALL) {
-        mach_error_t result = AMDeviceSecureInstallApplication(0, device, url, options, &operation_callback, 0);
-        //mach_error_t result = AMDeviceInstallApplication(installFd, path, options, operation_callback, NULL);
-        if (result != 0)
-        {
-			PRINT("AMDeviceInstallApplication failed: %d\n", result);
-			exit(EXIT_FAILURE);
-        }
-    }
-	else if (operation == OP_UNINSTALL) {
-        mach_error_t result = AMDeviceUninstallApplication (installFd, path, NULL, operation_callback, NULL);
-        if (result != 0)
-        {
-			PRINT("AMDeviceUninstallApplication failed: %d\n", result);
-			exit(EXIT_FAILURE);
-        }
-    }
-
-    assert(AMDeviceStopSession(device) == 0);
-    assert(AMDeviceDisconnect(device) == 0);
-
-
-    close(installFd);
-
-    CFRelease(path);
-    CFRelease(options);
-
-    if (operation == OP_INSTALL)
         PRINT("[100%%] Installed package %s\n", app_path);
-    else if (operation == OP_UNINSTALL)
-        PRINT("[100%%] Uninstalled package %s\n", app_path);
 
+        if (debug)
+            do_debug(device);
 
-    if (!debug) exit(EXIT_SUCCESS); // no debug phase
+    } else if (operation == OP_UNINSTALL) {
+        PRINT("[  0%%] Found device (%s), beginning uninstall\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
 
-    AMDeviceConnect(device);
-    assert(AMDeviceIsPaired(device));
-    assert(AMDeviceValidatePairing(device) == 0);
-    assert(AMDeviceStartSession(device) == 0);
+        uninstall_app(device);
 
-    PRINT("------ Debug phase ------\n");
+        PRINT("[100%%] uninstalled package %s\n", bundle_id);
 
-    mount_developer_image(device);      // put debugserver on the device
-    start_remote_debug_server(device);  // start debugserver
-    write_gdb_prep_cmds(device, url);   // dump the necessary gdb commands into a file
+    } else if (operation == OP_UPLOAD_FILE) {
+        PRINT("[  0%%] Found device (%s), sending file\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
 
-    CFRelease(url);
+        upload_file(device);
 
-    PRINT("[100%%] Connecting to remote debug server\n");
-    PRINT("-------------------------\n");
+        PRINT("[100%%] file sent %s\n", doc_file_path);
 
-    signal(SIGHUP, gdb_ready_handler);
+    } else if (operation == OP_LIST_FILES) {
+        PRINT("[  0%%] Found device (%s), listing / ...\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
 
-    pid_t parent = getpid();
-    int pid = fork();
-    if (pid == 0) {
-        system(GDB_SHELL);      // launch gdb
-        kill(parent, SIGHUP);  // "No. I am your father."
-        _exit(EXIT_SUCCESS);
+        list_files(device);
+
+        PRINT("[100%%] done.\n");
     }
+    exit(0);
 }
 
 void device_callback(struct am_device_notification_callback_info *info, void *arg) {
@@ -593,12 +782,30 @@ void timeout_callback(CFRunLoopTimerRef timer, void *info) {
 void usage(const char* app) {
     printf ("usage: %s [-q/--quiet] [-t/--timeout timeout(seconds)] [-v/--verbose] <command> [<args>] \n\n", app);
     printf ("Commands available:\n");
-    printf ("   install    [-i/--id device_id] -b/--bundle bundle.app [-a/--args arguments] \n");
-    printf ("    * Install the specified app with optional arguments to the specified device, or all attached devices if none are specified. \n\n");
-    printf ("   uninstall  [-i/--id device_id] -b/--bundle bundle.app \n");
-    printf ("    * Removed the specified bundle identifier (eg com.foo.MyApp) from the specified device, or all attached devices if none are specified. \n\n");
+    printf ("   install    [--id=device_id] --bundle=bundle.app [--debug] [--args=arguments] \n");
+    printf ("    * Install the specified app with optional arguments to the specified device, or all\n");
+    printf ("      attached devices if none are specified. \n\n");
+    printf ("   uninstall  [--id=device_id] --bundle-id=<bundle id> \n");
+    printf ("    * Removes the specified bundle identifier (eg com.foo.MyApp) from the specified device,\n");
+    printf ("      or all attached devices if none are specified. \n\n");
+    printf ("   upload     [--id=device_id] --bundle-id=<bundle id> --file=filename [--target=filename]\n");
+    printf ("    * Uploads a file to the documents directory of the app specified with the bundle \n");
+    printf ("      identifier (eg com.foo.MyApp) to the specified device, or all attached devices if\n");
+    printf ("      none are specified. \n\n");
+    printf ("   list-files [--id=device_id] --bundle-id=<bundle id> \n");
+    printf ("    * Lists the the files in the app-specific sandbox  specified with the bundle \n");
+    printf ("      identifier (eg com.foo.MyApp) on the specified device, or all attached devices if\n");
+    printf ("      none are specified. \n\n");
     printf ("   list-devices  \n");
     printf ("    * List all attached devices. \n\n");
+}
+
+bool args_are_valid() {
+    return (operation == OP_INSTALL && app_path) ||
+    (operation == OP_UNINSTALL && bundle_id) ||
+    (operation == OP_UPLOAD_FILE && bundle_id && doc_file_path) ||
+    (operation == OP_LIST_FILES && bundle_id) ||
+    (operation == OP_LIST_DEVICES);
 }
 
 int main(int argc, char *argv[]) {
@@ -609,6 +816,9 @@ int main(int argc, char *argv[]) {
 
         { "id", required_argument, NULL, 'i' },
         { "bundle", required_argument, NULL, 'b' },
+        { "file", required_argument, NULL, 'f' },
+        { "target", required_argument, NULL, 1 },
+        { "bundle-id", required_argument, NULL, 0 },
 
         { "debug", no_argument, NULL, 'd' },
         { "args", required_argument, NULL, 'a' },
@@ -617,33 +827,43 @@ int main(int argc, char *argv[]) {
     };
 
     char ch;
-    while ((ch = getopt_long(argc, argv, "qvt:i:b:da:", global_longopts, NULL)) != -1)
+    while ((ch = getopt_long(argc, argv, "qvtibfda:", global_longopts, NULL)) != -1)
     {
         switch (ch) {
-        case 'q':
-            quiet = 1;
-            break;
-        case 'v':
-            verbose = 1;
-            break;
-        case 'd':
-            debug = 1;
-            break;
-        case 't':
-            timeout = atoi(optarg);
-            break;
-        case 'b':
-            app_path = optarg;
-            break;
-        case 'a':
-            args = optarg;
-            break;
-        case 'i':
-            device_id = optarg;
-            break;
-        default:
-            usage(argv[0]);
-            return 1;
+            case 0:
+                bundle_id = optarg;
+                break;
+            case 'q':
+                quiet = 1;
+                break;
+            case 'v':
+                verbose = 1;
+                break;
+            case 'd':
+                debug = 1;
+                break;
+            case 't':
+                timeout = atoi(optarg);
+                break;
+            case 'b':
+                app_path = optarg;
+                break;
+            case 'f':
+                doc_file_path = optarg;
+                break;
+            case 1:
+                target_filename = optarg;
+                break;
+            case 'a':
+                args = optarg;
+                break;
+            case 'i':
+                device_id = optarg;
+                break;
+
+            default:
+                usage(argv[0]);
+                return 1;
         }
     }
 
@@ -659,14 +879,18 @@ int main(int argc, char *argv[]) {
         operation = OP_UNINSTALL;
     } else if (strcmp (argv [optind], "list-devices") == 0) {
         operation = OP_LIST_DEVICES;
+    } else if (strcmp (argv [optind], "upload") == 0) {
+        operation = OP_UPLOAD_FILE;
+    } else if (strcmp (argv [optind], "list-files") == 0) {
+        operation = OP_LIST_FILES;
     } else {
         usage (argv [0]);
-        exit(EXIT_SUCCESS);
+        exit (0);
     }
 
-    if (operation != OP_LIST_DEVICES && !app_path) {
+    if (!args_are_valid()) {
         usage(argv[0]);
-        exit(EXIT_SUCCESS);
+        exit(0);
     }
 
     if (operation == OP_INSTALL)
@@ -689,3 +913,4 @@ int main(int argc, char *argv[]) {
 
     CFRunLoopRun();
 }
+
