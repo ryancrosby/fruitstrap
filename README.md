@@ -5,7 +5,7 @@ Install and debug iPhone apps without using Xcode. Designed to work on unjailbro
 
 ## Requirements
 
-* Mac OS X. Tested on Snow Leopard only.
+* Mac OS X. Tested on Lion and Snow Leopard only.
 * You need to have a valid iPhone development certificate installed.
 * Xcode must be installed, along with the SDK for your iOS version.
 
@@ -45,3 +45,7 @@ Commands available:
 ## Notes
 
 * With some modifications, it may be possible to use this without Xcode installed; however, you would need a copy of the relevant DeveloperDiskImage.dmg (included with Xcode). GDB would also run slower as symbols would be downloaded from the device on-the-fly.
+
+## Issues
+
+* If the app is not compiled for the right iOS version, fruitstrap will succeed but the app will not run (eg. if your app is iOS 5+ only and the device is running iOS 4, fruitstrap runs and seems to copy the app to the device, but it does not appear in Springboard)
