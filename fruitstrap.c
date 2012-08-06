@@ -825,7 +825,7 @@ int main(int argc, char *argv[]) {
     };
 
     char ch;
-    while ((ch = getopt_long(argc, argv, "qvtibfda:", global_longopts, NULL)) != -1)
+    while ((ch = getopt_long(argc, argv, "qvi:b:f:da:t:", global_longopts, NULL)) != -1)
     {
         switch (ch) {
             case 0:
