@@ -50,6 +50,7 @@ typedef enum {
     OP_UNINSTALL,
     OP_LIST_DEVICES,
     OP_UPLOAD_FILE,
+    OP_DOWNLOAD_FILE,
     OP_LIST_FILES
 
 } operation_t;
@@ -671,6 +672,93 @@ void upload_file(AMDeviceRef device) {
     free(file_content);
 }
 
+void download_file(AMDeviceRef device)
+{
+    service_conn_t houseFd = start_house_arrest_service(device);
+
+    afc_file_ref file_ref;
+
+    afc_connection afc_conn;
+    afc_connection* afc_conn_p = &afc_conn;
+    AFCConnectionOpen(houseFd, 0, &afc_conn_p);
+
+    unsigned int size = 0, total = 0, len;
+    unsigned int i;
+    unsigned char buffer[16];
+
+    //PRINT("Downloading file(%s) from device\n", CFStringGetCStringPtr(target_filename, CFStringGetSystemEncoding()));
+    printf("Reading \"%s\" from device.\n", target_filename);
+    printf("Writing to disk at \"%s\"\n", doc_file_path);
+    
+    afc_dictionary afc_dict;
+    afc_dictionary* afc_dict_p = &afc_dict;
+    assert(AFCFileInfoOpen(afc_conn_p, target_filename, &afc_dict_p) == 0);
+
+    char *key, *val;
+    assert(AFCKeyValueRead(afc_dict_p, &key, &val) == 0);
+    while (key || val) {
+        //printf("\t%s = %s\n", key, val);
+        if (key == NULL || val == NULL)
+            break;
+        
+        if (!strcmp(key, "st_size")) {
+            size = atoi(val);
+        }
+        AFCKeyValueRead(afc_dict_p, &key, &val);
+    }
+    AFCKeyValueClose(afc_dict_p);
+    
+    assert(size != 0);
+    
+    size_t file_size = size;
+    //void * file_content[] = void *[file_size];
+
+    FILE *fileHandle;
+
+    fileHandle = fopen( doc_file_path, "w");
+
+    if (fileHandle == NULL) {
+        assert(AFCConnectionClose(afc_conn_p) == 0);
+        printf("Unable to open document file path\n");
+        exit(EXIT_FAILURE);
+    }
+
+    assert(AFCFileRefOpen(afc_conn_p, target_filename, 2, &file_ref) == 0);
+    
+    while (total < size) {
+        if ((size - total) < sizeof(buffer))
+            len = (size - total);
+        else
+            len = sizeof(buffer);
+        //len = min(size - total, sizeof(buffer));
+        
+        assert(AFCFileRefRead(afc_conn_p, file_ref, buffer, &len) == 0);
+        
+        if (!len)
+            break;
+        
+        //file_content[total] = buffer;
+
+        for(i = 0; i < len; i++)
+            fputc(buffer[i], fileHandle);
+        
+        
+        //for (i = 0; i < len; i++)
+        //    printf("%02X ", buffer[i]);
+		//printf("%*s| ", (sizeof(buffer)-len)*3+1, " ");
+		//for (i = 0; i < len; i++)
+	    //	printf("%c", buffer[i] >= 32 ? buffer[i] : ' ');
+		//putchar('\n');
+        
+        
+		total += len;
+    }
+    
+    assert(AFCFileRefClose(afc_conn_p, file_ref) == 0);
+    assert(AFCConnectionClose(afc_conn_p) == 0);
+    fclose(fileHandle);
+}
+
 void do_debug(AMDeviceRef device) {
     CFStringRef path = CFStringCreateWithCString(NULL, app_path, kCFStringEncodingASCII);
 
@@ -751,6 +839,13 @@ void handle_device(AMDeviceRef device) {
 
         PRINT("[100%%] file sent %s\n", doc_file_path);
 
+    } else if (operation == OP_DOWNLOAD_FILE) {
+        PRINT("[  0%%] Found device (%s), downloading file\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
+
+        download_file(device);
+
+        PRINT("[100%%] file received %s\n", doc_file_path);
+
     } else if (operation == OP_LIST_FILES) {
         PRINT("[  0%%] Found device (%s), listing / ...\n", CFStringGetCStringPtr(found_device_id, CFStringGetSystemEncoding()));
 
@@ -792,6 +887,10 @@ void usage(const char* app) {
     printf ("    * Uploads a file to the documents directory of the app specified with the bundle \n");
     printf ("      identifier (eg com.foo.MyApp) to the specified device, or all attached devices if\n");
     printf ("      none are specified. \n\n");
+    printf ("   download   [--id=device_id] --bundle-id=<bundle id> --file=filename --target=filename\n");
+    printf ("    * Downloads a file from the directory of the app specified with the bundle \n");
+    printf ("      identifier (eg com.foo.MyApp) to the specified device, or all attached devices if\n");
+    printf ("      none are specified. target = the file on the device. file = the path to download file to \n\n");
     printf ("   list-files [--id=device_id] --bundle-id=<bundle id> \n");
     printf ("    * Lists the the files in the app-specific sandbox  specified with the bundle \n");
     printf ("      identifier (eg com.foo.MyApp) on the specified device, or all attached devices if\n");
@@ -805,6 +904,7 @@ bool args_are_valid() {
     return (operation == OP_INSTALL && app_path) ||
     (operation == OP_UNINSTALL && bundle_id) ||
     (operation == OP_UPLOAD_FILE && bundle_id && doc_file_path) ||
+    (operation == OP_DOWNLOAD_FILE && bundle_id && doc_file_path && target_filename) ||
     (operation == OP_LIST_FILES && bundle_id) ||
     (operation == OP_LIST_DEVICES);
 }
@@ -882,6 +982,8 @@ int main(int argc, char *argv[]) {
         operation = OP_LIST_DEVICES;
     } else if (strcmp (argv [optind], "upload") == 0) {
         operation = OP_UPLOAD_FILE;
+    } else if (strcmp (argv [optind], "download") == 0) {
+        operation = OP_DOWNLOAD_FILE;
     } else if (strcmp (argv [optind], "list-files") == 0) {
         operation = OP_LIST_FILES;
     } else {
