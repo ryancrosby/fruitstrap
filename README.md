@@ -9,6 +9,9 @@ Install and debug iPhone apps without using Xcode. Designed to work on unjailbro
 * You need to have a valid iPhone development certificate installed.
 * Xcode must be installed, along with the SDK for your iOS version.
 
+## Compiling
+`gcc -o fruitstrap -framework CoreFoundation -framework MobileDevice -F/System/Library/PrivateFrameworks fruitstrap.c`
+
 ## Usage
 
 `fruitstrap [-q/--quiet] [-t/--timeout timeout(seconds)] [-v/--verbose] <command> [<args>]`
@@ -25,6 +28,11 @@ Commands available:
 
 * `upload     [--id=device_id] --bundle-id=<bundle id> --file=filename [--target=filename]`
   Uploads a file to the documents directory of the app specified with the bundle
+  identifier (eg com.foo.MyApp) to the specified device, or all attached devices if
+  none are specified.
+
+* `download   [--id=device_id] --bundle-id=<bundle id> --file=filename --target=filename`
+  Downloads a file from the directory of the app specified with the bundle
   identifier (eg com.foo.MyApp) to the specified device, or all attached devices if
   none are specified.
 
