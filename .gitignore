@@ -3,3 +3,12 @@ demo.app
 fruitstrap
 fruitstrap.dSYM
 .DS_Store
+
+# Xcode
+build/*
+*.pbxuser
+!default.pbxuser
+*.xcworkspace
+!default.xcworkspace
+xcuserdata
+profile
